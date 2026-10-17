@@ -20,9 +20,12 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
     },
     // Releases publish an Ed25519 signature for checksums.txt. Require it
     // before downloading an update, using the release workflow's public key.
-    publisher_key: Some(include_str!("../assets/update-public-key.hex")),
+    // Personal build: updates come from pipemalz/spotifast's own releases
+    // (.github/workflows/personal-release.yml), signed with its own key, so
+    // updating never swaps this build for one without the mini player lyrics.
+    publisher_key: Some(include_str!("../assets/personal-update-public-key.hex")),
     ..UpdateConfig::new(
-        "crmne/spotifast",
+        "pipemalz/spotifast",
         "Spotifast",
         "spotifast",
         env!("CARGO_PKG_VERSION"),

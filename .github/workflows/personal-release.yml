@@ -1,0 +1,200 @@
+name: Personal release
+
+# Personal build of Spotifast: upstream (crmne/spotifast) plus the mini
+# player lyrics. Once a day, when upstream has published a release this fork
+# does not have yet, merge that release's tag into `personal`, build Windows
+# x64 and publish it here, signed with this fork's own key
+# (assets/personal-update-public-key.hex). The app's updater checks this
+# repository, so its "Update" button installs these builds.
+#
+# Secrets:
+#   SYNC_TOKEN                     token with Contents and Workflows write on
+#                                  this repository (merges from upstream touch
+#                                  .github/workflows, which GITHUB_TOKEN may
+#                                  not push).
+#   PERSONAL_UPDATE_SIGNING_KEY    Ed25519 private key, PEM.
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: Build and publish even if this release already exists here
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: personal-release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      build: ${{ steps.check.outputs.build }}
+      sha: ${{ steps.merge.outputs.sha }}
+    steps:
+      - name: Latest upstream release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REBUILD: ${{ inputs.rebuild }}
+        run: |
+          tag=$(gh api repos/crmne/spotifast/releases/latest --jq .tag_name)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "$REBUILD" != "true" ] && gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$tag is already published here."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Building $tag."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v7
+        if: steps.check.outputs.build == 'true'
+        with:
+          ref: personal
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+      # A conflict fails this step, and GitHub emails the failure: resolve it
+      # by hand on `personal`, push, and run this workflow again.
+      - name: Merge the upstream release into personal
+        id: merge
+        if: steps.check.outputs.build == 'true'
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --no-tags https://github.com/crmne/spotifast.git "refs/tags/$TAG:refs/upstream/$TAG"
+          git merge --no-edit -m "Merge upstream $TAG into personal" "refs/upstream/$TAG"
+          git push origin HEAD:personal
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: sync
+    if: needs.sync.outputs.build == 'true'
+    runs-on: windows-latest
+    env:
+      CMAKE_GENERATOR: Ninja
+      TAG: ${{ needs.sync.outputs.tag }}
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.sync.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - run: rustup target add x86_64-pc-windows-msvc
+      - name: GLEW for libprojectM
+        run: vcpkg install glew:x64-windows-static
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - name: Check the binary
+        shell: pwsh
+        run: |
+          $binary = "target\$env:TARGET\release\spotifast.exe"
+          $imports = & dumpbin /dependents $binary | Out-String
+          $runtime = $imports | Select-String -Pattern 'MSVCP[0-9_]*\.dll|VCRUNTIME[0-9_]*\.dll'
+          if ($runtime) { throw "Spotifast imports an MSVC runtime:`n$runtime" }
+          $version = (& $binary --version | Out-String).Trim()
+          if ($version -ne "spotifast $($env:TAG.TrimStart('v'))") { throw "Unexpected --version output: $version" }
+      - name: Package
+        shell: bash
+        run: |
+          name="spotifast-${TAG}-${TARGET}"
+          mkdir -p "dist/$name"
+          cp "target/${TARGET}/release/spotifast.exe" README.md LICENSE packaging/spotifast-portable.txt "dist/$name/"
+          cd dist
+          7z a "$name.zip" "$name"
+      - name: Installer
+        shell: pwsh
+        run: |
+          $version = $env:TAG.TrimStart("v")
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DVersion=$version" "/DArch=x86_64" `
+            "/DBinary=$PWD\target\$env:TARGET\release\spotifast.exe" `
+            "/DOutputDir=$PWD\dist" packaging\windows\spotifast.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+      - name: Windows Installer package
+        shell: pwsh
+        run: |
+          dotnet tool install wix --version 5.0.2 --tool-path "$env:RUNNER_TEMP\wix"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PATH = "$env:RUNNER_TEMP\wix;$env:PATH"
+          gem install native-packages --version 0.9.0 --no-document
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = $env:TAG.TrimStart("v")
+          $payload = "dist\msi-input-$env:TARGET"
+          New-Item -ItemType Directory -Force $payload | Out-Null
+          $files = "target\$env:TARGET\release\spotifast.exe", "README.md", "LICENSE", "packaging\windows\spotifast-installer.txt"
+          Copy-Item $files $payload
+          $packages = "$env:RUNNER_TEMP\windows-packages"
+          native-packages build --version $version --target windows-amd64 --defer-recipes --output $packages
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$packages\packages\windows-amd64\msi\*.msi" dist\
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64
+          path: |
+            dist/*.zip
+            dist/*-setup.exe
+            dist/*.msi
+          if-no-files-found: error
+
+  publish:
+    needs: [sync, build]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.sync.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.sync.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: python3 packaging/release-names.py dist "$TAG"
+      # A raw 64-byte Ed25519 signature over checksums.txt, which the
+      # updater verifies against assets/personal-update-public-key.hex.
+      - name: Sign checksums
+        env:
+          SIGNING_KEY: ${{ secrets.PERSONAL_UPDATE_SIGNING_KEY }}
+        run: |
+          umask 077
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin \
+            -in dist/checksums.txt -out dist/checksums.txt.sig
+          rm "$RUNNER_TEMP/key.pem"
+          public=$(tr -d '[:space:]' < assets/personal-update-public-key.hex)
+          { printf '302a300506032b6570032100'; printf '%s' "$public"; } | xxd -r -p > "$RUNNER_TEMP/pub.der"
+          openssl pkeyutl -verify -pubin -keyform DER -inkey "$RUNNER_TEMP/pub.der" -rawin \
+            -in dist/checksums.txt -sigfile dist/checksums.txt.sig
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          SHA: ${{ needs.sync.outputs.sha }}
+        run: |
+          gh release delete "$TAG" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
+          gh release create "$TAG" dist/*.zip dist/*-setup.exe dist/*.msi dist/checksums.txt dist/checksums.txt.sig \
+            -R "$GITHUB_REPOSITORY" --target "$SHA" --latest \
+            --title "Spotifast $TAG (personal)" \
+            --notes "Personal build: upstream [$TAG](https://github.com/crmne/spotifast/releases/tag/$TAG) plus the mini player lyrics."
