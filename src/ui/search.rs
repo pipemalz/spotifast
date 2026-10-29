@@ -42,7 +42,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         Loadable::Loaded(results) => results.clone(),
         Loadable::Loading | Loadable::NotLoaded => {
             if !pending {
-                widgets::loading_row(ui, &palette, app.locale);
+                widgets::skeleton_rows(ui, &palette, app.locale, 6);
             }
             return;
         }
@@ -466,11 +466,14 @@ fn songs(app: &mut App, ui: &mut egui::Ui, results: &SearchResults, limit: usize
                 added_at: None,
                 added_by: None,
                 show_added_by: false,
+                show_plays: false,
                 compact: limit != usize::MAX,
                 thin: false,
                 shift: 0.0,
                 picked: false,
                 picked_songs: &[],
+                picked_positions: &[],
+                position: None,
             },
         );
     }

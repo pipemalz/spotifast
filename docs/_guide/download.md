@@ -62,7 +62,9 @@ its folder and its Start menu entry. Windows then lists one Spotifast under
 installed apps.
 {% endif %}
 To run Spotifast without an installer, download a ZIP file, extract it, and
-open `spotifast.exe`.
+open `spotifast.exe`. Since 0.13.4, it keeps its settings, state and caches
+in a `spotifast-data` folder next to it, so the folder carries everything
+(see [portable copies](/settings-and-files/#portable-copies)).
 
 - [Windows ZIP (most PCs)]({{ base }}/spotifast-v{{ v }}-x86_64-pc-windows-msvc.zip)
 - [Windows ZIP (ARM PCs)]({{ base }}/spotifast-v{{ v }}-aarch64-pc-windows-msvc.zip)
@@ -147,8 +149,14 @@ chmod +x ~/Downloads/spotifast-{{ v }}-x86_64.AppImage
 
 The AppImage bundles no libraries: like the DEB and RPM, it needs glibc 2.39
 or newer and your desktop's own libraries. Running it needs FUSE; without
-FUSE, start it with `--appimage-extract-and-run`. It does not update itself:
-download the new file when Spotifast says a release is out.
+FUSE, start it with `--appimage-extract-and-run`.
+
+From the release after 0.13.3, the AppImage updates itself like the portable
+downloads, as long as it sits in a folder of your own, such as
+`~/Applications`: Spotifast replaces the file in place and restarts it. It
+also carries update information, so AppImageUpdate, AppImageLauncher, AM and
+Gear Lever can update it too, downloading only what changed. Copies of 0.13.3
+and earlier need one more manual download.
 
 ### Other distributions
 
@@ -158,7 +166,8 @@ download the new file when Spotifast says a release is out.
 Unpack, put `spotifast` on your PATH, and copy the desktop entry and icon
 from the bundled `packaging/` directory if you want it in your launcher and
 handling `spotify:` links.
-The binary needs ALSA, PulseAudio or PipeWire, and Wayland or X11.
+The binary needs the ALSA and PipeWire libraries, and Wayland or X11. It plays
+through PipeWire, a PulseAudio server, or ALSA, whichever is running.
 
 Or build from source: see the [build instructions](/getting-started/#build-from-source).
 

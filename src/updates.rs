@@ -24,6 +24,10 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
     // (.github/workflows/personal-release.yml), signed with its own key, so
     // updating never swaps this build for one without the mini player lyrics.
     publisher_key: Some(include_str!("../assets/personal-update-public-key.hex")),
+    // Releases build their AppImages before publishing, so the signed
+    // checksums.txt lists them (#737): an AppImage replaces itself with the
+    // next one.
+    appimage: true,
     ..UpdateConfig::new(
         "pipemalz/spotifast",
         "Spotifast",
@@ -55,5 +59,13 @@ mod tests {
             "updates must require a publisher signature"
         );
         CONFIG.validate().unwrap();
+    }
+
+    /// An AppImage may replace itself only because the release workflow
+    /// builds the AppImages into the signed checksums.txt;
+    /// packaging/test-release-names.py checks that side.
+    #[test]
+    fn appimages_update_themselves() {
+        const { assert!(CONFIG.appimage) };
     }
 }
